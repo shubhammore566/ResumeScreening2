@@ -1,8 +1,8 @@
-"""Scoring, matching, and recommendation logic — with experience scoring."""
+"""Scoring, matching, and recommendation logic — with experience + academic scoring."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -17,11 +17,13 @@ class ResumeScore:
     similarity_score: float
     experience_score: float
     experience_years: float
-    overall_score: float
-    matched_skills: list[str]
-    missing_skills: list[str]
-    summary: str
-    recommendation: str
+    academic_score: float
+    academic_marks: dict = field(default_factory=dict)
+    overall_score: float = 0.0
+    matched_skills: list[str] = field(default_factory=list)
+    missing_skills: list[str] = field(default_factory=list)
+    summary: str = ""
+    recommendation: str = ""
 
 
 def calculate_ats_score(matched_skills: list[str], required_skills: list[str]) -> float:
@@ -89,18 +91,54 @@ def calculate_experience_score(years: float) -> float:
     return round(min(score, 100), 2)
 
 
+def calculate_academic_score(marks: dict) -> float:
+    """
+    10th %, 12th % aur CGPA ko 0-100 academic score mein convert karo.
+    Jitna high marks, utna high score — high score wale candidate ki
+    ranking/selection priority zyada hogi.
+
+    marks = {"tenth": float|None, "twelfth": float|None,
+             "cgpa": float|None, "cgpa_scale": float}
+    """
+    components = []
+
+    if marks.get("tenth") is not None:
+        components.append(marks["tenth"])
+
+    if marks.get("twelfth") is not None:
+        components.append(marks["twelfth"])
+
+    if marks.get("cgpa") is not None:
+        scale = marks.get("cgpa_scale", 10.0) or 10.0
+        cgpa_percent = (marks["cgpa"] / scale) * 100
+        components.append(cgpa_percent)
+
+    if not components:
+        return 0.0
+
+    academic_score = sum(components) / len(components)
+    return round(min(academic_score, 100), 2)
+
+
 def calculate_overall_score(
         ats_score: float,
         similarity_score: float,
-        experience_score: float
+        experience_score: float,
+        academic_score: float
 ) -> float:
     """
     Weights:
-      ATS Score        → 35%
-      Similarity Score → 45%
-      Experience Score → 20%
+      ATS Score         → 25%
+      Similarity Score  → 35%
+      Experience Score  → 15%
+      Academic Score    → 25%
     """
-    overall = (ats_score * 0.35) + (similarity_score * 0.45) + (experience_score * 0.20)
+    overall = (
+        (ats_score * 0.25)
+        + (similarity_score * 0.35)
+        + (experience_score * 0.15)
+        + (academic_score * 0.25)
+    )
     return round(min(overall, 100), 2)
 
 
@@ -139,6 +177,7 @@ def rank_resumes(results: list[ResumeScore]) -> pd.DataFrame:
             "ATS Score": r.ats_score,
             "Similarity Score": r.similarity_score,
             "Experience Score": r.experience_score,
+            "Academic Score": r.academic_score,
             "Overall Score": r.overall_score,
             "Matched Skills": ", ".join(r.matched_skills) or "None",
             "Missing Skills": ", ".join(r.missing_skills) or "None",
