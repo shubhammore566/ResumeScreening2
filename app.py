@@ -1,4 +1,4 @@
-"""Streamlit app — Resume Screening with Experience Scoring."""
+"""Streamlit app — Resume Screening with Experience + Academic Scoring."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from scorer import (
     ResumeScore,
     build_recommendation,
     calculate_ats_score,
+    calculate_academic_score,
     calculate_experience_score,
     calculate_overall_score,
     calculate_similarity_score,
@@ -20,6 +21,7 @@ from scorer import (
 from skill_extractor import (
     create_resume_summary,
     experience_label,
+    extract_academic_marks,
     extract_experience_years,
     extract_skills,
     extract_skills_from_job_description,
@@ -126,17 +128,40 @@ def plot_experience_bar(results: list[ResumeScore]) -> None:
     st.pyplot(fig)
 
 
+def plot_academic_bar(results: list[ResumeScore]) -> None:
+    """Bar chart — academic score comparison across all resumes."""
+    names  = [r.filename for r in results]
+    scores = [r.academic_score for r in results]
+    colors = ["#7c3aed" if s == max(scores) else "#c4b5fd" for s in scores]
+
+    fig, ax = plt.subplots(figsize=(max(5, len(names) * 1.5), 3))
+    bars = ax.bar(names, scores, color=colors)
+    ax.set_ylabel("Academic Score")
+    ax.set_title("Academic Score Comparison (10th / 12th / CGPA)")
+    ax.set_ylim(0, 100)
+
+    for bar, sc in zip(bars, scores):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 1,
+                f"{sc:.1f}", ha="center", fontsize=9)
+
+    plt.xticks(rotation=20, ha="right")
+    st.pyplot(fig)
+
+
 def analyze_resume(uploaded_file, job_description, required_skills) -> ResumeScore:
     parsed = parse_uploaded_resume(uploaded_file)
 
     matched_skills   = extract_skills(parsed.text, required_skills)
     missing_skills   = get_missing_skills(matched_skills, required_skills)
     experience_years = extract_experience_years(parsed.text)
+    academic_marks    = extract_academic_marks(parsed.text)
 
     ats_score        = calculate_ats_score(matched_skills, required_skills)
     similarity_score = calculate_similarity_score(parsed.text, job_description, matched_skills, required_skills)
     experience_score = calculate_experience_score(experience_years)
-    overall_score    = calculate_overall_score(ats_score, similarity_score, experience_score)
+    academic_score    = calculate_academic_score(academic_marks)
+    overall_score     = calculate_overall_score(ats_score, similarity_score, experience_score, academic_score)
 
     summary          = create_resume_summary(parsed.text)
     recommendation   = build_recommendation(ats_score, similarity_score, experience_years, missing_skills)
@@ -147,6 +172,8 @@ def analyze_resume(uploaded_file, job_description, required_skills) -> ResumeSco
         similarity_score=similarity_score,
         experience_score=experience_score,
         experience_years=experience_years,
+        academic_score=academic_score,
+        academic_marks=academic_marks,
         overall_score=overall_score,
         matched_skills=matched_skills,
         missing_skills=missing_skills,
@@ -160,7 +187,7 @@ def main() -> None:
     st.markdown("""
         <div class="hero">
             <h1>Smart Resume Screening System</h1>
-            <p>Resume parsing · ATS scoring · Experience scoring · Job matching & ranking</p>
+            <p>Resume parsing · ATS scoring · Experience scoring · Academic scoring · Job matching & ranking</p>
         </div>""", unsafe_allow_html=True)
 
     with st.sidebar:
@@ -218,22 +245,24 @@ def main() -> None:
     ranking_df   = st.session_state.ranking_df
     required_skills = st.session_state.required_skills
 
-    # Best candidate = highest overall score
+    # Best candidate = highest overall score (ATS + similarity + experience + academic)
     best = max(results, key=lambda r: r.overall_score)
 
     # ── TOP SNAPSHOT ──────────────────────────────────────────────────────────
     st.subheader("🏆 Best Candidate Snapshot")
     st.markdown(
-        f'<span class="best-badge">⭐ Best: {best.filename} — {best.experience_years} yrs experience</span>',
+        f'<span class="best-badge">⭐ Best: {best.filename} — {best.experience_years} yrs experience — '
+        f'Academic Score: {best.academic_score:.1f}</span>',
         unsafe_allow_html=True
     )
     st.write("")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1: render_score_card("ATS Score",        best.ats_score)
     with col2: render_score_card("Job Match",        best.similarity_score)
     with col3: render_score_card("Experience Score", best.experience_score)
-    with col4: render_score_card("Overall Score",    best.overall_score)
+    with col4: render_score_card("Academic Score",   best.academic_score)
+    with col5: render_score_card("Overall Score",    best.overall_score)
 
     # ── EXPERIENCE COMPARISON ─────────────────────────────────────────────────
     st.subheader("📅 Experience Comparison")
@@ -245,6 +274,25 @@ def main() -> None:
         label = experience_label(r.experience_years)
         badge = "🥇" if r == best else "📄"
         st.write(f"{badge} **{r.filename}** — {label}")
+
+    # ── ACADEMIC COMPARISON ───────────────────────────────────────────────────
+    st.subheader("🎓 Academic Score Comparison")
+    plot_academic_bar(results)
+
+    acad_sorted = sorted(results, key=lambda r: r.academic_score, reverse=True)
+    st.markdown("**Academic Summary (10th / 12th / CGPA):**")
+    for r in acad_sorted:
+        m = r.academic_marks or {}
+        parts = []
+        if m.get("tenth") is not None:
+            parts.append(f"10th: {m['tenth']}%")
+        if m.get("twelfth") is not None:
+            parts.append(f"12th: {m['twelfth']}%")
+        if m.get("cgpa") is not None:
+            parts.append(f"CGPA: {m['cgpa']}/{m.get('cgpa_scale', 10.0):.0f}")
+        detail = " | ".join(parts) if parts else "No academic marks detected"
+        badge = "🥇" if r == best else "📄"
+        st.write(f"{badge} **{r.filename}** — Score: {r.academic_score:.1f} — {detail}")
 
     # ── RANKING TABLE ─────────────────────────────────────────────────────────
     st.subheader("📊 Resume Ranking")
@@ -259,6 +307,18 @@ def main() -> None:
     with d1:
         st.markdown("### Experience")
         st.info(f"**{experience_label(sel.experience_years)}**  |  Experience Score: {sel.experience_score}/100")
+
+        st.markdown("### Academics")
+        m = sel.academic_marks or {}
+        acad_parts = []
+        if m.get("tenth") is not None:
+            acad_parts.append(f"10th: {m['tenth']}%")
+        if m.get("twelfth") is not None:
+            acad_parts.append(f"12th: {m['twelfth']}%")
+        if m.get("cgpa") is not None:
+            acad_parts.append(f"CGPA: {m['cgpa']}/{m.get('cgpa_scale', 10.0):.0f}")
+        acad_detail = " | ".join(acad_parts) if acad_parts else "No academic marks detected"
+        st.info(f"**{acad_detail}**  |  Academic Score: {sel.academic_score}/100")
 
         st.markdown("### Matched Skills")
         st.success(", ".join(sel.matched_skills) or "No matching skills found.")
@@ -275,7 +335,7 @@ def main() -> None:
 
     # ── COMPARISON CHART ──────────────────────────────────────────────────────
     st.subheader("📈 Comparison Chart")
-    chart_data = ranking_df[["Resume", "ATS Score", "Experience Score", "Overall Score"]].set_index("Resume")
+    chart_data = ranking_df[["Resume", "ATS Score", "Experience Score", "Academic Score", "Overall Score"]].set_index("Resume")
     st.bar_chart(chart_data)
 
     # ── DOWNLOAD ──────────────────────────────────────────────────────────────
