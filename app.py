@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
+import pandas as pd
 import streamlit as st
 
 from resume_parser import parse_uploaded_resume
@@ -23,9 +24,11 @@ from skill_extractor import (
     experience_label,
     extract_academic_marks,
     extract_experience_years,
+    extract_free_text_keywords,
     extract_skills,
     extract_skills_from_job_description,
     get_missing_skills,
+    keyword_search_in_text,
 )
 
 
@@ -179,6 +182,7 @@ def analyze_resume(uploaded_file, job_description, required_skills) -> ResumeSco
         missing_skills=missing_skills,
         summary=summary,
         recommendation=recommendation,
+        resume_text=parsed.text,
     )
 
 
@@ -293,6 +297,46 @@ def main() -> None:
         detail = " | ".join(parts) if parts else "No academic marks detected"
         badge = "🥇" if r == best else "📄"
         st.write(f"{badge} **{r.filename}** — Score: {r.academic_score:.1f} — {detail}")
+
+    # ── STUDENT-WISE MARKS (separate, per-student) ────────────────────────────
+    st.subheader("👤 Student-wise Marks")
+    marks_rows = []
+    for r in results:
+        m = r.academic_marks or {}
+        marks_rows.append({
+            "Student Name": r.filename,
+            "10th %": m.get("tenth") if m.get("tenth") is not None else "-",
+            "12th %": m.get("twelfth") if m.get("twelfth") is not None else "-",
+            "CGPA": (
+                f"{m['cgpa']}/{m.get('cgpa_scale', 10.0):.0f}"
+                if m.get("cgpa") is not None else "-"
+            ),
+            "Academic Score": r.academic_score,
+        })
+    st.dataframe(pd.DataFrame(marks_rows), use_container_width=True, hide_index=True)
+
+    # ── KEYWORD SEARCH FROM DESCRIPTION BOX ───────────────────────────────────
+    # Description box mein jo bhi word likha ho (skill ho, "SSC"/"HSC" ho, ya
+    # koi bhi other term ho) — us word ko har resume ke pure text mein dhoondo
+    # aur jin resumes/students mein wo mila unka naam yahan dikhao.
+    st.subheader("🔎 Keyword Search (from Description Box)")
+    desc_keywords = extract_free_text_keywords(job_description)
+    if not desc_keywords:
+        st.info("Description box mein koi searchable word nahi mila.")
+    else:
+        keyword_rows = []
+        for r in results:
+            matched_kw = keyword_search_in_text(r.resume_text, desc_keywords)
+            if matched_kw:
+                keyword_rows.append({
+                    "Student Name": r.filename,
+                    "Matched Words": ", ".join(matched_kw),
+                })
+        if keyword_rows:
+            st.success(f"Searched words: {', '.join(desc_keywords)}")
+            st.dataframe(pd.DataFrame(keyword_rows), use_container_width=True, hide_index=True)
+        else:
+            st.warning(f"Description ke words ({', '.join(desc_keywords)}) kisi bhi resume mein nahi mile.")
 
     # ── RANKING TABLE ─────────────────────────────────────────────────────────
     st.subheader("📊 Resume Ranking")
