@@ -24,6 +24,7 @@ class ResumeScore:
     missing_skills: list[str] = field(default_factory=list)
     summary: str = ""
     recommendation: str = ""
+    resume_text: str = ""
 
 
 def calculate_ats_score(matched_skills: list[str], required_skills: list[str]) -> float:
