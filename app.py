@@ -1,189 +1,348 @@
-"""Scoring, matching, and recommendation logic — with experience + academic scoring."""
+"""Streamlit app — Resume Screening with Experience + Academic Scoring."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import matplotlib.pyplot as plt
+import streamlit as st
 
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from resume_parser import parse_uploaded_resume
 
+from scorer import (
+    ResumeScore,
+    build_recommendation,
+    calculate_ats_score,
+    calculate_academic_score,
+    calculate_experience_score,
+    calculate_overall_score,
+    calculate_similarity_score,
+    rank_resumes,
+)
 
-@dataclass
-class ResumeScore:
-    """A complete score result for one resume."""
-    filename: str
-    ats_score: float
-    similarity_score: float
-    experience_score: float
-    experience_years: float
-    academic_score: float
-    academic_marks: dict = field(default_factory=dict)
-    overall_score: float = 0.0
-    matched_skills: list[str] = field(default_factory=list)
-    missing_skills: list[str] = field(default_factory=list)
-    summary: str = ""
-    recommendation: str = ""
-
-
-def calculate_ats_score(matched_skills: list[str], required_skills: list[str]) -> float:
-    if not required_skills:
-        return 0.0
-    skill_ratio = len(matched_skills) / len(required_skills)
-    ats_score = 50 + (skill_ratio * 35)
-    return round(min(ats_score, 85), 2)
+from skill_extractor import (
+    create_resume_summary,
+    experience_label,
+    extract_academic_marks,
+    extract_experience_years,
+    extract_skills,
+    extract_skills_from_job_description,
+    get_missing_skills,
+)
 
 
-def calculate_similarity_score(
-        resume_text: str,
-        job_description: str,
-        matched_skills: list[str],
-        required_skills: list[str]
-) -> float:
-    if not resume_text.strip() or not job_description.strip():
-        return 0.0
+st.set_page_config(
+    page_title="AI Resume Screening Agent",
+    page_icon="📄",
+    layout="wide",
+)
 
-    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
-    matrix = vectorizer.fit_transform([resume_text, job_description])
-    text_score = cosine_similarity(matrix[0:1], matrix[1:2])[0][0] * 100
-
-    skill_ratio = len(matched_skills) / len(required_skills) if required_skills else 0
-
-    if skill_ratio >= 1:
-        similarity_score = 95 + (text_score * 0.05)
-    elif skill_ratio >= 0.8:
-        similarity_score = 85 + (text_score * 0.08)
-    elif skill_ratio >= 0.6:
-        similarity_score = 70 + (text_score * 0.10)
-    else:
-        similarity_score = (skill_ratio * 70) + (text_score * 0.30)
-
-    return round(min(similarity_score, 100), 2)
+if "results" not in st.session_state:
+    st.session_state.results = None
+if "ranking_df" not in st.session_state:
+    st.session_state.ranking_df = None
+if "required_skills" not in st.session_state:
+    st.session_state.required_skills = None
 
 
-def calculate_experience_score(years: float) -> float:
-    """
-    Experience years ko 0-100 score mein convert karo.
-
-    0 yrs  → 0
-    1 yr   → 20  (fresher)
-    2 yrs  → 35
-    3 yrs  → 50
-    5 yrs  → 70
-    7 yrs  → 85
-    10+ yrs→ 100
-    """
-    if years <= 0:
-        return 0.0
-    elif years <= 1:
-        score = years * 20
-    elif years <= 3:
-        score = 20 + (years - 1) * 15
-    elif years <= 5:
-        score = 50 + (years - 3) * 10
-    elif years <= 7:
-        score = 70 + (years - 5) * 7.5
-    elif years <= 10:
-        score = 85 + (years - 7) * 5
-    else:
-        score = 100.0
-
-    return round(min(score, 100), 2)
-
-
-def calculate_academic_score(marks: dict) -> float:
-    """
-    10th %, 12th % aur CGPA ko 0-100 academic score mein convert karo.
-    Jitna high marks, utna high score — high score wale candidate ki
-    ranking/selection priority zyada hogi.
-
-    marks = {"tenth": float|None, "twelfth": float|None,
-             "cgpa": float|None, "cgpa_scale": float}
-    """
-    components = []
-
-    if marks.get("tenth") is not None:
-        components.append(marks["tenth"])
-
-    if marks.get("twelfth") is not None:
-        components.append(marks["twelfth"])
-
-    if marks.get("cgpa") is not None:
-        scale = marks.get("cgpa_scale", 10.0) or 10.0
-        cgpa_percent = (marks["cgpa"] / scale) * 100
-        components.append(cgpa_percent)
-
-    if not components:
-        return 0.0
-
-    academic_score = sum(components) / len(components)
-    return round(min(academic_score, 100), 2)
+CUSTOM_CSS = """
+<style>
+.main { background: #f7f9fc; }
+.hero {
+    padding: 1.3rem 1.5rem;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #102a43, #1d4ed8);
+    color: white;
+    margin-bottom: 1rem;
+}
+.hero h1 { margin: 0; font-size: 2rem; }
+.hero p  { margin: .35rem 0 0; color: #dbeafe; }
+.score-card {
+    padding: 1rem;
+    border-radius: 8px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 6px rgba(15,23,42,0.08);
+}
+.best-badge {
+    background: #16a34a;
+    color: white;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: bold;
+}
+</style>
+"""
 
 
-def calculate_overall_score(
-        ats_score: float,
-        similarity_score: float,
-        experience_score: float,
-        academic_score: float
-) -> float:
-    """
-    Weights:
-      ATS Score         → 25%
-      Similarity Score  → 35%
-      Experience Score  → 15%
-      Academic Score    → 25%
-    """
-    overall = (
-        (ats_score * 0.25)
-        + (similarity_score * 0.35)
-        + (experience_score * 0.15)
-        + (academic_score * 0.25)
+def render_score_card(title: str, value: float, suffix: str = "%") -> None:
+    st.markdown(
+        f"""<div class="score-card">
+            <h3>{title}</h3>
+            <strong>{value:.2f}{suffix}</strong>
+        </div>""",
+        unsafe_allow_html=True,
     )
-    return round(min(overall, 100), 2)
 
 
-def build_recommendation(
-        ats_score: float,
-        similarity_score: float,
-        experience_years: float,
-        missing_skills: list[str]
-) -> str:
-    exp_note = ""
-    if experience_years == 0:
-        exp_note = " No work experience detected — may be a fresher."
-    elif experience_years < 2:
-        exp_note = f" Candidate has {experience_years} yr(s) experience — junior level."
-    else:
-        exp_note = f" Candidate has {experience_years} yrs experience."
-
-    if ats_score >= 80 and similarity_score >= 45:
-        return f"Strong match. Resume covers most required skills and aligns well with the job description.{exp_note}"
-
-    if ats_score >= 60:
-        missing_text = ", ".join(missing_skills) if missing_skills else "job-specific keywords"
-        return f"Good potential match. Improve resume by adding: {missing_text}.{exp_note}"
-
-    missing_text = ", ".join(missing_skills) if missing_skills else "the required role skills"
-    return f"Needs improvement. Candidate should strengthen: {missing_text}.{exp_note}"
+def plot_skill_match(matched_skills, missing_skills):
+    fig, ax = plt.subplots(figsize=(5, 3))
+    ax.bar(["Matched Skills", "Missing Skills"],
+           [len(matched_skills), len(missing_skills)],
+           color=["#16a34a", "#dc2626"])
+    ax.set_ylabel("Count")
+    ax.set_title("Skill Match Overview")
+    st.pyplot(fig)
 
 
-def rank_resumes(results: list[ResumeScore]) -> pd.DataFrame:
-    """Return ranking table sorted by overall score."""
-    rows = [
-        {
-            "Rank": i + 1,
-            "Resume": r.filename,
-            "Experience": f"{r.experience_years} yrs",
-            "ATS Score": r.ats_score,
-            "Similarity Score": r.similarity_score,
-            "Experience Score": r.experience_score,
-            "Academic Score": r.academic_score,
-            "Overall Score": r.overall_score,
-            "Matched Skills": ", ".join(r.matched_skills) or "None",
-            "Missing Skills": ", ".join(r.missing_skills) or "None",
-        }
-        for i, r in enumerate(
-            sorted(results, key=lambda x: x.overall_score, reverse=True)
-        )
-    ]
-    return pd.DataFrame(rows)
+def plot_skill_distribution(matched_skills, missing_skills):
+    values = [len(matched_skills), len(missing_skills)]
+    if sum(values) == 0:
+        st.info("No skills found.")
+        return
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.pie(values, labels=["Matched", "Missing"],
+           autopct="%1.1f%%", startangle=90,
+           colors=["#22c55e", "#f97316"])
+    ax.set_title("Skill Match %")
+    st.pyplot(fig)
+
+
+def plot_experience_bar(results: list[ResumeScore]) -> None:
+    """Bar chart — experience years comparison across all resumes."""
+    names  = [r.filename for r in results]
+    years  = [r.experience_years for r in results]
+    colors = ["#1d4ed8" if y == max(years) else "#93c5fd" for y in years]
+
+    fig, ax = plt.subplots(figsize=(max(5, len(names) * 1.5), 3))
+    bars = ax.bar(names, years, color=colors)
+    ax.set_ylabel("Experience (years)")
+    ax.set_title("Experience Comparison")
+    ax.set_ylim(0, max(years) + 2 if years else 5)
+
+    for bar, yr in zip(bars, years):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.1,
+                f"{yr} yrs", ha="center", fontsize=9)
+
+    plt.xticks(rotation=20, ha="right")
+    st.pyplot(fig)
+
+
+def plot_academic_bar(results: list[ResumeScore]) -> None:
+    """Bar chart — academic score comparison across all resumes."""
+    names  = [r.filename for r in results]
+    scores = [r.academic_score for r in results]
+    colors = ["#7c3aed" if s == max(scores) else "#c4b5fd" for s in scores]
+
+    fig, ax = plt.subplots(figsize=(max(5, len(names) * 1.5), 3))
+    bars = ax.bar(names, scores, color=colors)
+    ax.set_ylabel("Academic Score")
+    ax.set_title("Academic Score Comparison (10th / 12th / CGPA)")
+    ax.set_ylim(0, 100)
+
+    for bar, sc in zip(bars, scores):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 1,
+                f"{sc:.1f}", ha="center", fontsize=9)
+
+    plt.xticks(rotation=20, ha="right")
+    st.pyplot(fig)
+
+
+def analyze_resume(uploaded_file, job_description, required_skills) -> ResumeScore:
+    parsed = parse_uploaded_resume(uploaded_file)
+
+    matched_skills   = extract_skills(parsed.text, required_skills)
+    missing_skills   = get_missing_skills(matched_skills, required_skills)
+    experience_years = extract_experience_years(parsed.text)
+    academic_marks    = extract_academic_marks(parsed.text)
+
+    ats_score        = calculate_ats_score(matched_skills, required_skills)
+    similarity_score = calculate_similarity_score(parsed.text, job_description, matched_skills, required_skills)
+    experience_score = calculate_experience_score(experience_years)
+    academic_score    = calculate_academic_score(academic_marks)
+    overall_score     = calculate_overall_score(ats_score, similarity_score, experience_score, academic_score)
+
+    summary          = create_resume_summary(parsed.text)
+    recommendation   = build_recommendation(ats_score, similarity_score, experience_years, missing_skills)
+
+    return ResumeScore(
+        filename=parsed.filename,
+        ats_score=ats_score,
+        similarity_score=similarity_score,
+        experience_score=experience_score,
+        experience_years=experience_years,
+        academic_score=academic_score,
+        academic_marks=academic_marks,
+        overall_score=overall_score,
+        matched_skills=matched_skills,
+        missing_skills=missing_skills,
+        summary=summary,
+        recommendation=recommendation,
+    )
+
+
+def main() -> None:
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+    st.markdown("""
+        <div class="hero">
+            <h1>Smart Resume Screening System</h1>
+            <p>Resume parsing · ATS scoring · Experience scoring · Academic scoring · Job matching & ranking</p>
+        </div>""", unsafe_allow_html=True)
+
+    with st.sidebar:
+        st.header("Screening Setup")
+        uploaded_files = st.file_uploader(
+            "Upload PDF resumes", type=["pdf"], accept_multiple_files=True)
+        job_description = st.text_area(
+            "Paste job description", height=120,
+            placeholder="e.g. data science / python developer / frontend")
+        use_job_skills = st.checkbox("Use skills detected from job description", value=True)
+        analyze_button = st.button("Analyze Resumes", type="primary", use_container_width=True)
+
+    base_required_skills = (
+        extract_skills_from_job_description(job_description) if use_job_skills else []
+    )
+    required_skills = base_required_skills
+
+    if not required_skills:
+        st.warning("No skills detected. Please enter a job description (e.g. 'data science', 'frontend', 'python').")
+        st.stop()
+
+    st.subheader("Required Skills")
+    st.success(", ".join(required_skills))
+
+    # ── ANALYZE ──────────────────────────────────────────────────────────────
+    if analyze_button:
+        if not uploaded_files:
+            st.error("Please upload at least one PDF resume.")
+            st.stop()
+
+        results = []
+        progress_bar = st.progress(0)
+        for i, uploaded_file in enumerate(uploaded_files, 1):
+            try:
+                result = analyze_resume(uploaded_file, job_description, required_skills)
+                results.append(result)
+            except Exception as e:
+                st.warning(f"Could not analyze {uploaded_file.name}: {e}")
+            progress_bar.progress(i / len(uploaded_files))
+
+        if not results:
+            st.error("No resumes could be analyzed.")
+            st.stop()
+
+        st.session_state.results      = results
+        st.session_state.ranking_df   = rank_resumes(results)
+        st.session_state.required_skills = required_skills
+
+    # ── LOAD RESULTS ──────────────────────────────────────────────────────────
+    if st.session_state.results is None:
+        st.info("Upload resumes and click Analyze Resumes.")
+        st.stop()
+
+    results      = st.session_state.results
+    ranking_df   = st.session_state.ranking_df
+    required_skills = st.session_state.required_skills
+
+    # Best candidate = highest overall score (ATS + similarity + experience + academic)
+    best = max(results, key=lambda r: r.overall_score)
+
+    # ── TOP SNAPSHOT ──────────────────────────────────────────────────────────
+    st.subheader("🏆 Best Candidate Snapshot")
+    st.markdown(
+        f'<span class="best-badge">⭐ Best: {best.filename} — {best.experience_years} yrs experience — '
+        f'Academic Score: {best.academic_score:.1f}</span>',
+        unsafe_allow_html=True
+    )
+    st.write("")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1: render_score_card("ATS Score",        best.ats_score)
+    with col2: render_score_card("Job Match",        best.similarity_score)
+    with col3: render_score_card("Experience Score", best.experience_score)
+    with col4: render_score_card("Academic Score",   best.academic_score)
+    with col5: render_score_card("Overall Score",    best.overall_score)
+
+    # ── EXPERIENCE COMPARISON ─────────────────────────────────────────────────
+    st.subheader("📅 Experience Comparison")
+    plot_experience_bar(results)
+
+    exp_sorted = sorted(results, key=lambda r: r.experience_years, reverse=True)
+    st.markdown("**Experience Summary:**")
+    for r in exp_sorted:
+        label = experience_label(r.experience_years)
+        badge = "🥇" if r == best else "📄"
+        st.write(f"{badge} **{r.filename}** — {label}")
+
+    # ── ACADEMIC COMPARISON ───────────────────────────────────────────────────
+    st.subheader("🎓 Academic Score Comparison")
+    plot_academic_bar(results)
+
+    acad_sorted = sorted(results, key=lambda r: r.academic_score, reverse=True)
+    st.markdown("**Academic Summary (10th / 12th / CGPA):**")
+    for r in acad_sorted:
+        m = r.academic_marks or {}
+        parts = []
+        if m.get("tenth") is not None:
+            parts.append(f"10th: {m['tenth']}%")
+        if m.get("twelfth") is not None:
+            parts.append(f"12th: {m['twelfth']}%")
+        if m.get("cgpa") is not None:
+            parts.append(f"CGPA: {m['cgpa']}/{m.get('cgpa_scale', 10.0):.0f}")
+        detail = " | ".join(parts) if parts else "No academic marks detected"
+        badge = "🥇" if r == best else "📄"
+        st.write(f"{badge} **{r.filename}** — Score: {r.academic_score:.1f} — {detail}")
+
+    # ── RANKING TABLE ─────────────────────────────────────────────────────────
+    st.subheader("📊 Resume Ranking")
+    st.dataframe(ranking_df, use_container_width=True, hide_index=True)
+
+    # ── DETAILED ANALYSIS ─────────────────────────────────────────────────────
+    st.subheader("🔍 Detailed Resume Analysis")
+    selected_resume = st.selectbox("Choose resume", [r.filename for r in results])
+    sel = next(r for r in results if r.filename == selected_resume)
+
+    d1, d2 = st.columns([1.5, 1])
+    with d1:
+        st.markdown("### Experience")
+        st.info(f"**{experience_label(sel.experience_years)}**  |  Experience Score: {sel.experience_score}/100")
+
+        st.markdown("### Academics")
+        m = sel.academic_marks or {}
+        acad_parts = []
+        if m.get("tenth") is not None:
+            acad_parts.append(f"10th: {m['tenth']}%")
+        if m.get("twelfth") is not None:
+            acad_parts.append(f"12th: {m['twelfth']}%")
+        if m.get("cgpa") is not None:
+            acad_parts.append(f"CGPA: {m['cgpa']}/{m.get('cgpa_scale', 10.0):.0f}")
+        acad_detail = " | ".join(acad_parts) if acad_parts else "No academic marks detected"
+        st.info(f"**{acad_detail}**  |  Academic Score: {sel.academic_score}/100")
+
+        st.markdown("### Matched Skills")
+        st.success(", ".join(sel.matched_skills) or "No matching skills found.")
+
+        st.markdown("### Missing Skills")
+        st.warning(", ".join(sel.missing_skills) or "No missing skills.")
+
+        st.markdown("### Recommendation")
+        st.info(sel.recommendation)
+
+    with d2:
+        plot_skill_match(sel.matched_skills, sel.missing_skills)
+        plot_skill_distribution(sel.matched_skills, sel.missing_skills)
+
+    # ── COMPARISON CHART ──────────────────────────────────────────────────────
+    st.subheader("📈 Comparison Chart")
+    chart_data = ranking_df[["Resume", "ATS Score", "Experience Score", "Academic Score", "Overall Score"]].set_index("Resume")
+    st.bar_chart(chart_data)
+
+    # ── DOWNLOAD ──────────────────────────────────────────────────────────────
+    csv_data = ranking_df.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Download Ranking CSV", data=csv_data,
+                       file_name="resume_ranking.csv", mime="text/csv")
+
+
+if __name__ == "__main__":
+    main()
