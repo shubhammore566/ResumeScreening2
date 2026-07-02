@@ -314,3 +314,73 @@ def experience_label(years: float) -> str:
         return f"{years} yrs — Senior"
     else:
         return f"{years} yrs — Expert"
+
+
+def extract_academic_marks(text: str) -> dict:
+    """
+    Resume text se 10th %, 12th % aur CGPA nikaalo.
+
+    Returns:
+        {
+            "tenth": float | None,       # 10th percentage
+            "twelfth": float | None,     # 12th percentage
+            "cgpa": float | None,        # raw CGPA/GPA value
+            "cgpa_scale": float,         # 10.0 or 4.0 — scale CGPA is on
+        }
+    """
+    normalized = normalize_text(text).lower()
+
+    def find_percent(patterns: list[str]) -> float | None:
+        for pat in patterns:
+            m = re.search(pat, normalized)
+            if m:
+                val = float(m.group(1))
+                if 0 < val <= 100:
+                    return val
+        return None
+
+    tenth_patterns = [
+        r'10\s*th[^\d]{0,25}(\d{1,3}(?:\.\d+)?)\s*%',
+        r'\bssc\b[^\d]{0,25}(\d{1,3}(?:\.\d+)?)\s*%',
+        r'class\s*x[^\d]{0,25}(\d{1,3}(?:\.\d+)?)\s*%',
+        r'matric(?:ulation)?[^\d]{0,25}(\d{1,3}(?:\.\d+)?)\s*%',
+    ]
+    twelfth_patterns = [
+        r'12\s*th[^\d]{0,25}(\d{1,3}(?:\.\d+)?)\s*%',
+        r'\bhsc\b[^\d]{0,25}(\d{1,3}(?:\.\d+)?)\s*%',
+        r'class\s*xii[^\d]{0,25}(\d{1,3}(?:\.\d+)?)\s*%',
+        r'intermediate[^\d]{0,25}(\d{1,3}(?:\.\d+)?)\s*%',
+        r'senior\s+secondary[^\d]{0,25}(\d{1,3}(?:\.\d+)?)\s*%',
+    ]
+
+    tenth = find_percent(tenth_patterns)
+    twelfth = find_percent(twelfth_patterns)
+
+    cgpa = None
+    cgpa_scale = 10.0
+
+    # CGPA out of 10 — e.g. "CGPA: 8.5/10" or "CGPA 8.5"
+    m = re.search(r'cgpa[^\d]{0,10}(\d{1,2}(?:\.\d+)?)\s*/\s*10', normalized)
+    if not m:
+        m = re.search(r'\bcgpa\b[^\d]{0,10}(\d{1,2}(?:\.\d+)?)(?!\s*/)', normalized)
+    if m:
+        val = float(m.group(1))
+        if 0 < val <= 10:
+            cgpa = val
+            cgpa_scale = 10.0
+
+    # GPA out of 4 — e.g. "GPA: 3.7/4"
+    if cgpa is None:
+        m = re.search(r'gpa[^\d]{0,10}(\d{1,2}(?:\.\d+)?)\s*/\s*4', normalized)
+        if m:
+            val = float(m.group(1))
+            if 0 < val <= 4:
+                cgpa = val
+                cgpa_scale = 4.0
+
+    return {
+        "tenth": tenth,
+        "twelfth": twelfth,
+        "cgpa": cgpa,
+        "cgpa_scale": cgpa_scale,
+    }
