@@ -183,6 +183,56 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# Generic stopwords — inhe description se keyword nikaalte waqt ignore karo
+FREE_TEXT_STOPWORDS = {
+    "a", "an", "the", "and", "or", "for", "of", "in", "on", "at", "to", "with",
+    "is", "are", "was", "were", "be", "been", "being", "this", "that", "these",
+    "those", "it", "as", "by", "from", "we", "you", "i", "he", "she", "they",
+    "have", "has", "had", "do", "does", "did", "will", "would", "should",
+    "can", "could", "may", "might", "must", "need", "not", "no", "yes", "if",
+    "then", "than", "so", "such", "also", "etc", "looking", "candidate",
+    "candidates", "required", "require", "requirement", "requirements",
+    "years", "year", "job", "description", "role", "responsibilities",
+    "skills", "skill", "please", "want", "wanted",
+}
+
+
+def extract_free_text_keywords(text: str) -> list[str]:
+    """
+    Description box mein jo bhi words type kiye hain unhe generic
+    keywords ki tarah nikaalo — sirf predefined skill list tak limited
+    nahi, taaki koi bhi term (SSC, HSC, college name, project, etc.)
+    resumes mein search kiya ja sake.
+    """
+    normalized = normalize_text(text).lower()
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9\+\.#/]*", normalized)
+    seen: set[str] = set()
+    keywords: list[str] = []
+    for tok in tokens:
+        if len(tok) < 2 or tok in FREE_TEXT_STOPWORDS or tok in seen:
+            continue
+        seen.add(tok)
+        keywords.append(tok)
+    return keywords
+
+
+def keyword_search_in_text(resume_text: str, keywords: Iterable[str]) -> list[str]:
+    """
+    Description ke generic keywords ko resume ke pure text mein dhoondo
+    (predefined skill list se independent — koi bhi word match ho sakta hai,
+    jaise SSC, HSC, college name, ya koi bhi other term).
+    """
+    normalized = normalize_text(resume_text).lower()
+    matched: list[str] = []
+    for kw in keywords:
+        kw_clean = (kw or "").strip().lower()
+        if not kw_clean:
+            continue
+        if re.search(rf"(?<!\w){re.escape(kw_clean)}(?!\w)", normalized):
+            matched.append(kw)
+    return matched
+
+
 def extract_skills(
     text: str,
     required_skills: Iterable[str] | None = None
