@@ -20,6 +20,7 @@ class ResumeScore:
     academic_score: float
     academic_marks: dict = field(default_factory=dict)
     overall_score: float = 0.0
+    academic_selection_score: float = 0.0
     matched_skills: list[str] = field(default_factory=list)
     missing_skills: list[str] = field(default_factory=list)
     summary: str = ""
@@ -121,6 +122,22 @@ def calculate_academic_score(marks: dict) -> float:
     return round(min(academic_score, 100), 2)
 
 
+def calculate_academic_selection_score(academic_score: float, experience_score: float) -> float:
+    """
+    Jab description box mein SSC/HSC/10th/12th/CGPA jaisa academic query
+    detect ho, tab candidate selection isi score se hota hai — academic
+    marks ko sabse zyada weight (75%) milta hai, experience ko thoda
+    weight (25%) milta hai, taaki jisme sabse jyada marks (10th + 12th +
+    CGPA overall) ho wahi resume top pe select ho.
+
+    Weights:
+      Academic Score    → 75%
+      Experience Score  → 25%
+    """
+    score = (academic_score * 0.75) + (experience_score * 0.25)
+    return round(min(score, 100), 2)
+
+
 def calculate_overall_score(
         ats_score: float,
         similarity_score: float,
@@ -187,4 +204,31 @@ def rank_resumes(results: list[ResumeScore]) -> pd.DataFrame:
             sorted(results, key=lambda x: x.overall_score, reverse=True)
         )
     ]
+    return pd.DataFrame(rows)
+
+
+def rank_resumes_by_academics(results: list[ResumeScore]) -> pd.DataFrame:
+    """
+    Academic-query mode ke liye ranking table — SSC/HSC/CGPA marks aur
+    experience ke combined "academic_selection_score" ke basis par sorted,
+    jisme sabse jyada marks wala candidate No. 1 par aata hai.
+    """
+    rows = []
+    for i, r in enumerate(
+        sorted(results, key=lambda x: x.academic_selection_score, reverse=True)
+    ):
+        m = r.academic_marks or {}
+        rows.append({
+            "Rank": i + 1,
+            "Student Name": r.filename,
+            "10th %": m.get("tenth") if m.get("tenth") is not None else "-",
+            "12th %": m.get("twelfth") if m.get("twelfth") is not None else "-",
+            "CGPA": (
+                f"{m['cgpa']}/{m.get('cgpa_scale', 10.0):.0f}"
+                if m.get("cgpa") is not None else "-"
+            ),
+            "Academic Score": r.academic_score,
+            "Experience": f"{r.experience_years} yrs",
+            "Selection Score": r.academic_selection_score,
+        })
     return pd.DataFrame(rows)
