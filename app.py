@@ -1,4 +1,5 @@
-"""Streamlit app — Resume Screening with Experience + Academic Scoring."""
+"""Streamlit app — Resume Screening with Experience + Academic Scoring
+   + Academic-Query (SSC/HSC/CGPA) based Selection."""
 
 from __future__ import annotations
 
@@ -13,10 +14,12 @@ from scorer import (
     build_recommendation,
     calculate_ats_score,
     calculate_academic_score,
+    calculate_academic_selection_score,
     calculate_experience_score,
     calculate_overall_score,
     calculate_similarity_score,
     rank_resumes,
+    rank_resumes_by_academics,
 )
 
 from skill_extractor import (
@@ -28,6 +31,7 @@ from skill_extractor import (
     extract_skills,
     extract_skills_from_job_description,
     get_missing_skills,
+    is_academic_query,
     keyword_search_in_text,
 )
 
@@ -44,6 +48,8 @@ if "ranking_df" not in st.session_state:
     st.session_state.ranking_df = None
 if "required_skills" not in st.session_state:
     st.session_state.required_skills = None
+if "academic_mode" not in st.session_state:
+    st.session_state.academic_mode = False
 
 
 CUSTOM_CSS = """
@@ -67,6 +73,14 @@ CUSTOM_CSS = """
 }
 .best-badge {
     background: #16a34a;
+    color: white;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: bold;
+}
+.academic-badge {
+    background: #7c3aed;
     color: white;
     padding: 4px 12px;
     border-radius: 20px;
@@ -165,6 +179,7 @@ def analyze_resume(uploaded_file, job_description, required_skills) -> ResumeSco
     experience_score = calculate_experience_score(experience_years)
     academic_score    = calculate_academic_score(academic_marks)
     overall_score     = calculate_overall_score(ats_score, similarity_score, experience_score, academic_score)
+    academic_selection_score = calculate_academic_selection_score(academic_score, experience_score)
 
     summary          = create_resume_summary(parsed.text)
     recommendation   = build_recommendation(ats_score, similarity_score, experience_years, missing_skills)
@@ -178,6 +193,7 @@ def analyze_resume(uploaded_file, job_description, required_skills) -> ResumeSco
         academic_score=academic_score,
         academic_marks=academic_marks,
         overall_score=overall_score,
+        academic_selection_score=academic_selection_score,
         matched_skills=matched_skills,
         missing_skills=missing_skills,
         summary=summary,
@@ -191,7 +207,7 @@ def main() -> None:
     st.markdown("""
         <div class="hero">
             <h1>Smart Resume Screening System</h1>
-            <p>Resume parsing · ATS scoring · Experience scoring · Academic scoring · Job matching & ranking</p>
+            <p>Resume parsing · ATS scoring · Experience scoring · Academic scoring (SSC/HSC/CGPA) · Job matching & ranking</p>
         </div>""", unsafe_allow_html=True)
 
     with st.sidebar:
@@ -199,22 +215,45 @@ def main() -> None:
         uploaded_files = st.file_uploader(
             "Upload PDF resumes", type=["pdf"], accept_multiple_files=True)
         job_description = st.text_area(
-            "Paste job description", height=120,
-            placeholder="e.g. data science / python developer / frontend")
+            "Paste job description OR type a query (e.g. 'ssc hsc', 'python developer', 'cgpa')",
+            height=120,
+            placeholder="e.g. data science / python developer / frontend  —  OR  —  ssc hsc / 10th 12th marks",
+        )
         use_job_skills = st.checkbox("Use skills detected from job description", value=True)
         analyze_button = st.button("Analyze Resumes", type="primary", use_container_width=True)
+
+    # ── DETECT QUERY TYPE ────────────────────────────────────────────────────
+    # Agar description box mein "ssc"/"hsc"/"10th"/"12th"/"cgpa"/"marks" jaise
+    # academic words likhe hain, to app academic-selection mode mein chala
+    # jaata hai — yahan skill-matching zaroori nahi hai.
+    academic_mode = is_academic_query(job_description)
 
     base_required_skills = (
         extract_skills_from_job_description(job_description) if use_job_skills else []
     )
     required_skills = base_required_skills
 
-    if not required_skills:
-        st.warning("No skills detected. Please enter a job description (e.g. 'data science', 'frontend', 'python').")
+    if not required_skills and not academic_mode:
+        st.warning(
+            "No skills detected. Please enter a job description (e.g. 'data science', "
+            "'frontend', 'python') — or type 'ssc'/'hsc'/'10th'/'12th'/'cgpa' to select "
+            "candidates by academic marks instead."
+        )
         st.stop()
 
-    st.subheader("Required Skills")
-    st.success(", ".join(required_skills))
+    if academic_mode:
+        st.subheader("🎓 Academic Selection Mode Active")
+        st.info(
+            "Description box mein academic keyword (SSC/HSC/10th/12th/CGPA) detect hua hai. "
+            "Resumes ab academic marks (10th + 12th + CGPA overall) ke basis par select/rank "
+            "kiye jaayenge — jisme sabse zyada marks honge, wahi resume top pe select hoga."
+        )
+        if required_skills:
+            st.subheader("Additionally Detected Skills")
+            st.success(", ".join(required_skills))
+    else:
+        st.subheader("Required Skills")
+        st.success(", ".join(required_skills))
 
     # ── ANALYZE ──────────────────────────────────────────────────────────────
     if analyze_button:
@@ -239,6 +278,7 @@ def main() -> None:
         st.session_state.results      = results
         st.session_state.ranking_df   = rank_resumes(results)
         st.session_state.required_skills = required_skills
+        st.session_state.academic_mode = academic_mode
 
     # ── LOAD RESULTS ──────────────────────────────────────────────────────────
     if st.session_state.results is None:
@@ -248,17 +288,32 @@ def main() -> None:
     results      = st.session_state.results
     ranking_df   = st.session_state.ranking_df
     required_skills = st.session_state.required_skills
+    academic_mode = st.session_state.academic_mode
 
-    # Best candidate = highest overall score (ATS + similarity + experience + academic)
-    best = max(results, key=lambda r: r.overall_score)
+    # Selection logic:
+    #   - Academic-query mode (SSC/HSC/CGPA typed)  → highest academic_selection_score wins
+    #     (10th + 12th + CGPA overall marks, with a small experience boost)
+    #   - Normal job-description mode               → highest overall_score wins
+    #     (ATS + similarity + experience + academic)
+    if academic_mode:
+        best = max(results, key=lambda r: r.academic_selection_score)
+    else:
+        best = max(results, key=lambda r: r.overall_score)
 
     # ── TOP SNAPSHOT ──────────────────────────────────────────────────────────
     st.subheader("🏆 Best Candidate Snapshot")
-    st.markdown(
-        f'<span class="best-badge">⭐ Best: {best.filename} — {best.experience_years} yrs experience — '
-        f'Academic Score: {best.academic_score:.1f}</span>',
-        unsafe_allow_html=True
-    )
+    if academic_mode:
+        st.markdown(
+            f'<span class="academic-badge">🎓 Selected: {best.filename} — Academic Score: '
+            f'{best.academic_score:.1f} — {best.experience_years} yrs experience</span>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            f'<span class="best-badge">⭐ Best: {best.filename} — {best.experience_years} yrs experience — '
+            f'Academic Score: {best.academic_score:.1f}</span>',
+            unsafe_allow_html=True
+        )
     st.write("")
 
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -267,6 +322,24 @@ def main() -> None:
     with col3: render_score_card("Experience Score", best.experience_score)
     with col4: render_score_card("Academic Score",   best.academic_score)
     with col5: render_score_card("Overall Score",    best.overall_score)
+
+    # ── ACADEMIC-BASED SELECTION (SSC / HSC / CGPA) ──────────────────────────
+    # Ye section sirf tab dikhta hai jab description box mein academic query
+    # (ssc/hsc/10th/12th/cgpa/marks) type ki gayi ho. Sabse zyada marks wale
+    # candidate ko "✅ Selected" badge milta hai.
+    if academic_mode:
+        st.subheader("🎓 Academic-Based Selection (SSC / HSC / CGPA)")
+        academic_rank_df = rank_resumes_by_academics(results)
+        academic_rank_df.insert(
+            1, "Selected",
+            academic_rank_df["Student Name"].apply(lambda n: "✅" if n == best.filename else "")
+        )
+        st.dataframe(academic_rank_df, use_container_width=True, hide_index=True)
+        st.success(
+            f"✅ Highest overall marks (10th + 12th + CGPA): **{best.filename}** "
+            f"— Academic Score: {best.academic_score:.1f}/100, "
+            f"Experience: {best.experience_years} yrs"
+        )
 
     # ── EXPERIENCE COMPARISON ─────────────────────────────────────────────────
     st.subheader("📅 Experience Comparison")
@@ -362,7 +435,10 @@ def main() -> None:
         if m.get("cgpa") is not None:
             acad_parts.append(f"CGPA: {m['cgpa']}/{m.get('cgpa_scale', 10.0):.0f}")
         acad_detail = " | ".join(acad_parts) if acad_parts else "No academic marks detected"
-        st.info(f"**{acad_detail}**  |  Academic Score: {sel.academic_score}/100")
+        st.info(
+            f"**{acad_detail}**  |  Academic Score: {sel.academic_score}/100  |  "
+            f"Academic Selection Score: {sel.academic_selection_score}/100"
+        )
 
         st.markdown("### Matched Skills")
         st.success(", ".join(sel.matched_skills) or "No matching skills found.")
