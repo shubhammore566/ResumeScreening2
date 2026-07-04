@@ -183,56 +183,6 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-# Generic stopwords — inhe description se keyword nikaalte waqt ignore karo
-FREE_TEXT_STOPWORDS = {
-    "a", "an", "the", "and", "or", "for", "of", "in", "on", "at", "to", "with",
-    "is", "are", "was", "were", "be", "been", "being", "this", "that", "these",
-    "those", "it", "as", "by", "from", "we", "you", "i", "he", "she", "they",
-    "have", "has", "had", "do", "does", "did", "will", "would", "should",
-    "can", "could", "may", "might", "must", "need", "not", "no", "yes", "if",
-    "then", "than", "so", "such", "also", "etc", "looking", "candidate",
-    "candidates", "required", "require", "requirement", "requirements",
-    "years", "year", "job", "description", "role", "responsibilities",
-    "skills", "skill", "please", "want", "wanted",
-}
-
-
-def extract_free_text_keywords(text: str) -> list[str]:
-    """
-    Description box mein jo bhi words type kiye hain unhe generic
-    keywords ki tarah nikaalo — sirf predefined skill list tak limited
-    nahi, taaki koi bhi term (SSC, HSC, college name, project, etc.)
-    resumes mein search kiya ja sake.
-    """
-    normalized = normalize_text(text).lower()
-    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9\+\.#/]*", normalized)
-    seen: set[str] = set()
-    keywords: list[str] = []
-    for tok in tokens:
-        if len(tok) < 2 or tok in FREE_TEXT_STOPWORDS or tok in seen:
-            continue
-        seen.add(tok)
-        keywords.append(tok)
-    return keywords
-
-
-def keyword_search_in_text(resume_text: str, keywords: Iterable[str]) -> list[str]:
-    """
-    Description ke generic keywords ko resume ke pure text mein dhoondo
-    (predefined skill list se independent — koi bhi word match ho sakta hai,
-    jaise SSC, HSC, college name, ya koi bhi other term).
-    """
-    normalized = normalize_text(resume_text).lower()
-    matched: list[str] = []
-    for kw in keywords:
-        kw_clean = (kw or "").strip().lower()
-        if not kw_clean:
-            continue
-        if re.search(rf"(?<!\w){re.escape(kw_clean)}(?!\w)", normalized):
-            matched.append(kw)
-    return matched
-
-
 def extract_skills(
     text: str,
     required_skills: Iterable[str] | None = None
@@ -434,3 +384,80 @@ def extract_academic_marks(text: str) -> dict:
         "cgpa": cgpa,
         "cgpa_scale": cgpa_scale,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ACADEMIC-QUERY DETECTION + FREE-TEXT KEYWORD SEARCH
+# (naya feature: description box mein "SSC"/"HSC"/"marks"/etc likhne par
+#  academic-based selection mode on ho jaye, aur description box ko ek
+#  general-purpose search box ki tarah bhi use kiya ja sake.)
+# ─────────────────────────────────────────────────────────────────────────
+
+# In words mein se koi bhi description box mein mile to samjho user
+# academic marks (SSC/HSC/10th/12th/CGPA) ke basis par candidate select
+# karna chahta hai.
+ACADEMIC_KEYWORDS = [
+    "ssc", "hsc", "10th", "12th", "tenth", "twelfth",
+    "cgpa", "gpa", "marks", "marksheet", "percentage",
+    "academic", "academics", "matriculation", "intermediate",
+    "class x", "class xii", "sgpa",
+]
+
+# Common filler / non-searchable words — inko free-text keyword search se
+# hata dete hain taaki sirf meaningful words hi search ho.
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with",
+    "is", "are", "i", "want", "need", "looking", "candidate", "resume",
+    "resumes", "job", "description", "type", "please", "who", "which",
+    "has", "have", "highest", "high", "higher", "more", "most", "top",
+    "best", "select", "show", "find", "based", "basis", "wise",
+}
+
+
+def is_academic_query(text: str) -> bool:
+    """
+    Check karo ki description/job-box mein SSC/HSC/10th/12th/CGPA jaisa
+    koi academic keyword type hua hai ya nahi. Agar haan, to app academic
+    marks ke basis par resume select/highlight karega.
+    """
+    normalized = normalize_text(text).lower()
+    if not normalized:
+        return False
+    return any(
+        re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", normalized)
+        for kw in ACADEMIC_KEYWORDS
+    )
+
+
+def extract_free_text_keywords(text: str, min_len: int = 3) -> list[str]:
+    """
+    Description box mein jo bhi likha ho — skill ho, "SSC"/"HSC" ho, ya
+    koi bhi doosra word ho — usko clean karke ek keyword list bana do,
+    taaki har resume ke pure text mein wo words dhoonde ja sakein.
+    """
+    normalized = normalize_text(text).lower()
+    if not normalized:
+        return []
+
+    words = re.findall(r"[a-zA-Z][a-zA-Z0-9\+\.\#]*", normalized)
+    keywords: list[str] = []
+    seen = set()
+    for w in words:
+        if len(w) < min_len or w in _STOPWORDS or w in seen:
+            continue
+        seen.add(w)
+        keywords.append(w)
+    return keywords
+
+
+def keyword_search_in_text(resume_text: str, keywords: Iterable[str]) -> list[str]:
+    """
+    Diye gaye keywords (description box se) resume ke pure text mein
+    dhoondo, aur jo bhi match ho jaayein unki list return karo.
+    """
+    normalized = normalize_text(resume_text).lower()
+    matched = []
+    for kw in keywords:
+        if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", normalized):
+            matched.append(kw)
+    return matched
