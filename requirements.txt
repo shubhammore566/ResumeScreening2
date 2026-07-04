@@ -1,10 +1,6 @@
 streamlit
-pdfplumber
-pandas
-spacy
+pymupdf
 scikit-learn
-matplotlib
+pandas
 numpy
-plotly
-PyPDF2
-nltk
+matplotlib
