@@ -1,0 +1,67 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: GitHub Agent - passwordless AWS deployment access via GitHub Actions OIDC
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: shubhammore566
+  GitHubRepo:
+    Type: String
+    Default: ResumeScreening2
+  GitHubBranch:
+    Type: String
+    Default: main
+Resources:
+  GitHubActionsOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList: [6938fd4d98bab03faadb97b34396831e3780aea1]
+  GitHubAgentDeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: GitHubAgentDeploymentRole
+      Description: Short-lived role for GitHub Agent deployments
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !GetAtt GitHubActionsOIDCProvider.Arn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/${GitHubBranch}'
+      Policies:
+        - PolicyName: GitHubAgentEC2Deployment
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeVolumesModifications
+                Resource: '*'
+              - Effect: Allow
+                Action: ec2:AuthorizeSecurityGroupIngress
+                Resource: '*'
+              - Effect: Allow
+                Action: ec2:ModifyVolume
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                  - ssm:GetCommandInvocation
+                  - ssm:DescribeInstanceInformation
+                Resource: '*'
+              - Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: '*'
+Outputs:
+  GitHubAgentRoleArn:
+    Description: Non-secret role ARN to paste into GitHub Agent
+    Value: !GetAtt GitHubAgentDeploymentRole.Arn
